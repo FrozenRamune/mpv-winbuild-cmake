@@ -1,5 +1,5 @@
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..7609776769 100644
+index 71d79067a9..c7b03e7a96 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -1,7 +1,8 @@
@@ -12,7 +12,7 @@ index 71d79067a9..7609776769 100644
   *
   * This file is part of FFmpeg.
   *
-@@ -19,6 +20,19 @@
+@@ -19,185 +20,407 @@
   * License along with FFmpeg; if not, write to the Free Software
   * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
   */
@@ -32,7 +32,8 @@ index 71d79067a9..7609776769 100644
  #include <libxml/parser.h>
  #include <time.h>
  #include "libavutil/bprint.h"
-@@ -26,178 +40,385 @@
++#include "libavutil/channel_layout.h"
+ #include "libavutil/mem.h"
  #include "libavutil/opt.h"
  #include "libavutil/time.h"
  #include "libavutil/parseutils.h"
@@ -40,6 +41,7 @@ index 71d79067a9..7609776769 100644
 +#include "libavutil/lfg.h"
 +#include "libavutil/random_seed.h"
 +#include "libavutil/avassert.h"
++#include "libavcodec/codec_par.h"
  #include "internal.h"
  #include "avio_internal.h"
 -#include "dash.h"
@@ -558,7 +560,7 @@ index 71d79067a9..7609776769 100644
      timeinfo.tm_year = year - 1900;
      timeinfo.tm_mon  = month - 1;
      timeinfo.tm_mday = day;
-@@ -208,2145 +429,2711 @@ static uint64_t get_utc_date_time_insec(AVFormatContext *s, const char *datetime
+@@ -208,2145 +431,2737 @@ static uint64_t get_utc_date_time_insec(AVFormatContext *s, const char *datetime
      return av_timegm(&timeinfo);
  }
  
@@ -1087,7 +1089,9 @@ index 71d79067a9..7609776769 100644
  
 -    av_dict_free(&tmp);
 +        memcpy(init_info->key_ids[0], cp->default_kid, init_info->key_id_size);
-+
+ 
+-    if (is_http)
+-        *is_http = av_strstart(proto_name, "http", NULL);
 +        init_info->next = as->init_info;
 +        as->init_info = init_info;
 +        init_info = NULL;
@@ -1095,9 +1099,7 @@ index 71d79067a9..7609776769 100644
 +        dash_log_unknown_scheme(s, &scheme);
 +        goto out;
 +    }
- 
--    if (is_http)
--        *is_http = av_strstart(proto_name, "http", NULL);
++
 +out:
 +    if (init_info)
 +        av_encryption_init_info_free(init_info);
@@ -1325,8 +1327,46 @@ index 71d79067a9..7609776769 100644
 -            if (!rep->init_section->url) {
 -                av_freep(&rep->init_section);
 -                return AVERROR(ENOMEM);
--            }
--        }
++    char *url_chunk = NULL;
++    char *resolved_url = NULL;
++    DASHURLList *new_urls = NULL;
++    int is_absolute;
++    char *base_url;
++
++    if (!(url_chunk = xmlNodeGetContent(node)))
++        return AVERROR(ENOMEM);
++
++    base_url = (*urls)->elems[0];
++    if ((ret = ff_make_absolute_urla(&resolved_url, base_url, url_chunk)) < 0)
++        goto out;
++
++    if (dash_urllist_has(*urls, resolved_url))
++        goto out;
++
++    is_absolute = !strcmp(resolved_url, url_chunk);
++
++    if (1 == (*urls)->refcount) {
++        /* If we own the instance, it means that this node is an alternative
++         * BaseURL. */
++        if (is_absolute) {
++            void *p;
++
++            if ((p = av_realloc(*urls, offsetof(DASHURLList, elems[(*urls)->nb + 1])))) {
++                /* Put the new URL at a random place. Absolute addresses most
++                 * commonly mean different servers/CDNs, so we can help a
++                 * little bit on load-balancing. */
++                unsigned to_index;
++
++                *urls = p;
++                to_index = av_lfg_get(&c->rnd) % ((*urls)->nb + 1);
++                (*urls)->elems[(*urls)->nb++] = (*urls)->elems[to_index];
++                (*urls)->elems[to_index] = resolved_url, resolved_url = NULL;
+             }
++        } else {
++            /* We do not want to explode URL list so we ignore relative
++             * alternative URLs. Also, using different paths on the same
++             * server does not really makes sense. */
+         }
 -    } else if (!av_strcasecmp(fragmenturl_node->name, "SegmentURL")) {
 -        media_val = xmlGetProp(fragmenturl_node, "media");
 -        range_val = xmlGetProp(fragmenturl_node, "mediaRange");
@@ -1352,29 +1392,44 @@ index 71d79067a9..7609776769 100644
 -                free_fragment(&seg);
 -                return err;
 -            }
--        }
--    }
-+    char *url_chunk = NULL;
-+    char *resolved_url = NULL;
-+    DASHURLList *new_urls = NULL;
-+    int is_absolute;
-+    char *base_url;
++    } else {
++        /* Either add a single absolute URL to the list or in case of a
++         * relative BaseURL combine it with every parent URL. */
++        if (!(new_urls = dash_new_urllist(is_absolute ? 1 : (*urls)->nb))) {
++            ret = AVERROR(ENOMEM);
++            goto out;
+         }
++
++        /* We have already done the first one at the top. */
++        new_urls->elems[0] = resolved_url, resolved_url = NULL;
++        if (!is_absolute) {
++            for (unsigned i = 1; i < (*urls)->nb; ++i)
++                if (!(ret = ff_make_absolute_urla(&new_urls->elems[i], (*urls)->elems[i], url_chunk)))
++                    goto out;
++        }
++
++        /* Replace URL list of current level with the modified one. */
++        dash_unref_urllist(*urls);
++        *urls = new_urls;
++        new_urls = NULL;
+     }
  
 -    return 0;
--}
-+    if (!(url_chunk = xmlNodeGetContent(node)))
-+        return AVERROR(ENOMEM);
++out:
++    xmlFree(url_chunk);
++    av_free(resolved_url);
++    dash_unref_urllist(new_urls);
++    return ret;
+ }
  
 -static int parse_manifest_segmenttimeline(AVFormatContext *s, struct representation *rep,
 -                                          xmlNodePtr fragment_timeline_node)
--{
++static av_cold int dash_parse_mimetype(DASHParameters *par, const char *value)
+ {
 -    xmlAttrPtr attr = NULL;
 -    char *val  = NULL;
 -    int err;
-+    base_url = (*urls)->elems[0];
-+    if ((ret = ff_make_absolute_urla(&resolved_url, base_url, url_chunk)) < 0)
-+        goto out;
- 
+-
 -    if (!av_strcasecmp(fragment_timeline_node->name, "S")) {
 -        struct timeline *tml = av_mallocz(sizeof(struct timeline));
 -        if (!tml) {
@@ -1383,14 +1438,21 @@ index 71d79067a9..7609776769 100644
 -        attr = fragment_timeline_node->properties;
 -        while (attr) {
 -            val = xmlGetProp(fragment_timeline_node, attr->name);
-+    if (dash_urllist_has(*urls, resolved_url))
-+        goto out;
++    if (!strncmp(value, "video/", 6))
++        par->codec_type = AVMEDIA_TYPE_VIDEO;
++    else if (!strncmp(value, "audio/", 6))
++        par->codec_type = AVMEDIA_TYPE_AUDIO;
++    else if (!strncmp(value, "text/", 5))
++        par->codec_type = AVMEDIA_TYPE_SUBTITLE;
++    else
++        return 1;
  
 -            if (!val) {
 -                av_log(s, AV_LOG_WARNING, "parse_manifest_segmenttimeline attr->name = %s val is NULL\n", attr->name);
 -                continue;
 -            }
-+    is_absolute = !strcmp(resolved_url, url_chunk);
++    return 0;
++}
  
 -            if (!av_strcasecmp(attr->name, "t")) {
 -                tml->starttime = (int64_t)strtoll(val, NULL, 10);
@@ -1398,45 +1460,30 @@ index 71d79067a9..7609776769 100644
 -                tml->repeat =(int64_t) strtoll(val, NULL, 10);
 -            } else if (!av_strcasecmp(attr->name, "d")) {
 -                tml->duration = (int64_t)strtoll(val, NULL, 10);
-+    if (1 == (*urls)->refcount) {
-+        /* If we own the instance, it means that this node is an alternative
-+         * BaseURL. */
-+        if (is_absolute) {
-+            void *p;
-+
-+            if ((p = av_realloc(*urls, offsetof(DASHURLList, elems[(*urls)->nb + 1])))) {
-+                /* Put the new URL at a random place. Absolute addresses most
-+                 * commonly mean different servers/CDNs, so we can help a
-+                 * little bit on load-balancing. */
-+                unsigned to_index;
-+
-+                *urls = p;
-+                to_index = av_lfg_get(&c->rnd) % ((*urls)->nb + 1);
-+                (*urls)->elems[(*urls)->nb++] = (*urls)->elems[to_index];
-+                (*urls)->elems[to_index] = resolved_url, resolved_url = NULL;
-             }
+-            }
 -            attr = attr->next;
 -            xmlFree(val);
-+        } else {
-+            /* We do not want to explode URL list so we ignore relative
-+             * alternative URLs. Also, using different paths on the same
-+             * server does not really makes sense. */
-         }
+-        }
 -        err = av_dynarray_add_nofree(&rep->timelines, &rep->n_timelines, tml);
 -        if (err < 0) {
 -            av_free(tml);
 -            return err;
-+    } else {
-+        /* Either add a single absolute URL to the list or in case of a
-+         * relative BaseURL combine it with every parent URL. */
-+        if (!(new_urls = dash_new_urllist(is_absolute ? 1 : (*urls)->nb))) {
-+            ret = AVERROR(ENOMEM);
-+            goto out;
-         }
--    }
--
--    return 0;
--}
+-        }
++static av_cold int dash_parse_contenttype(AVFormatContext *s,
++                                          DASHParameters *par,
++                                          const xmlChar *value)
++{
++    if (!strcmp(value, "video"))
++        par->codec_type = AVMEDIA_TYPE_VIDEO;
++    else if (!strcmp(value, "audio"))
++        par->codec_type = AVMEDIA_TYPE_AUDIO;
++    else {
++        par->codec_type = AVMEDIA_TYPE_UNKNOWN;
++        return 1;
+     }
+ 
+     return 0;
+ }
  
 -static int resolve_content_path(AVFormatContext *s, const char *url, int *max_url_size, xmlNodePtr *baseurl_nodes, int n_baseurl_nodes)
 -{
@@ -1465,131 +1512,8 @@ index 71d79067a9..7609776769 100644
 -        if (ishttp(text)) {
 -            xmlFree(text);
 -            break;
-+        /* We have already done the first one at the top. */
-+        new_urls->elems[0] = resolved_url, resolved_url = NULL;
-+        if (!is_absolute) {
-+            for (unsigned i = 1; i < (*urls)->nb; ++i)
-+                if (!(ret = ff_make_absolute_urla(&new_urls->elems[i], (*urls)->elems[i], url_chunk)))
-+                    goto out;
-         }
--        xmlFree(text);
--    }
--
--    tmp_max_url_size = aligned(tmp_max_url_size);
--    text = av_mallocz(tmp_max_url_size);
--    if (!text) {
--        updated = AVERROR(ENOMEM);
--        goto end;
--    }
--    av_strlcpy(text, url, strlen(url)+1);
--    tmp = text;
--    while (mpdName = av_strtok(tmp, "/", &tmp))  {
--        size = strlen(mpdName);
--    }
--    av_free(text);
- 
--    path = av_mallocz(tmp_max_url_size);
--    tmp_str = av_mallocz(tmp_max_url_size);
--    if (!tmp_str || !path) {
--        updated = AVERROR(ENOMEM);
--        goto end;
-+        /* Replace URL list of current level with the modified one. */
-+        dash_unref_urllist(*urls);
-+        *urls = new_urls;
-+        new_urls = NULL;
-     }
- 
--    av_strlcpy (path, url, strlen(url) - size + 1);
--    for (rootId = n_baseurl_nodes - 1; rootId > 0; rootId --) {
--        if (!(node = baseurl_nodes[rootId])) {
--            continue;
--        }
--        text = xmlNodeGetContent(node);
--        if (ishttp(text)) {
--            xmlFree(text);
--            break;
 -        }
 -        xmlFree(text);
--    }
-+out:
-+    xmlFree(url_chunk);
-+    av_free(resolved_url);
-+    dash_unref_urllist(new_urls);
-+    return ret;
-+}
- 
--    node = baseurl_nodes[rootId];
--    baseurl = xmlNodeGetContent(node);
--    root_url = (av_strcasecmp(baseurl, "")) ? baseurl : path;
--    if (node) {
--        xmlNodeSetContent(node, root_url);
--        updated = 1;
--    }
-+static av_cold int dash_parse_mimetype(DASHParameters *par, const char *value)
-+{
-+    if (!strncmp(value, "video/", 6))
-+        par->codec_type = AVMEDIA_TYPE_VIDEO;
-+    else if (!strncmp(value, "audio/", 6))
-+        par->codec_type = AVMEDIA_TYPE_AUDIO;
-+    else if (!strncmp(value, "text/", 5))
-+        par->codec_type = AVMEDIA_TYPE_SUBTITLE;
-+    else
-+        return 1;
- 
--    size = strlen(root_url);
--    isRootHttp = ishttp(root_url);
-+    return 0;
-+}
- 
--    if (size > 0 && root_url[size - 1] != token) {
--        av_strlcat(root_url, "/", size + 2);
--        size += 2;
-+static av_cold int dash_parse_contenttype(AVFormatContext *s,
-+                                          DASHParameters *par,
-+                                          const xmlChar *value)
-+{
-+    if (!strcmp(value, "video"))
-+        par->codec_type = AVMEDIA_TYPE_VIDEO;
-+    else if (!strcmp(value, "audio"))
-+        par->codec_type = AVMEDIA_TYPE_AUDIO;
-+    else {
-+        par->codec_type = AVMEDIA_TYPE_UNKNOWN;
-+        return 1;
-     }
- 
--    for (i = 0; i < n_baseurl_nodes; ++i) {
--        if (i == rootId) {
--            continue;
--        }
--        text = xmlNodeGetContent(baseurl_nodes[i]);
--        if (text && !av_strstart(text, "/", NULL)) {
--            memset(tmp_str, 0, strlen(tmp_str));
--            if (!ishttp(text) && isRootHttp) {
--                av_strlcpy(tmp_str, root_url, size + 1);
--            }
--            start = (text[0] == token);
--            if (start && av_stristr(tmp_str, text)) {
--                char *p = tmp_str;
--                if (!av_strncasecmp(tmp_str, "http://", 7)) {
--                    p += 7;
--                } else if (!av_strncasecmp(tmp_str, "https://", 8)) {
--                    p += 8;
--                }
--                p = strchr(p, '/');
--                memset(p + 1, 0, strlen(p));
--            }
--            av_strlcat(tmp_str, text + start, tmp_max_url_size);
--            xmlNodeSetContent(baseurl_nodes[i], tmp_str);
--            updated = 1;
--            xmlFree(text);
--        }
--    }
-+    return 0;
-+}
- 
--end:
--    if (tmp_max_url_size > *max_url_size) {
--        *max_url_size = tmp_max_url_size;
 +static av_cold int dash_parse_codecs(AVFormatContext *s,
 +                                     DASHParameters *par,
 +                                     const xmlChar *value)
@@ -1623,26 +1547,27 @@ index 71d79067a9..7609776769 100644
 +        par->codec_id = AV_CODEC_ID_NONE;
 +        return 1;
      }
--    av_free(path);
--    av_free(tmp_str);
--    xmlFree(baseurl);
--    return updated;
  
+-    tmp_max_url_size = aligned(tmp_max_url_size);
+-    text = av_mallocz(tmp_max_url_size);
+-    if (!text) {
+-        updated = AVERROR(ENOMEM);
+-        goto end;
+-    }
+-    av_strlcpy(text, url, strlen(url)+1);
+-    tmp = text;
+-    while (mpdName = av_strtok(tmp, "/", &tmp))  {
+-        size = strlen(mpdName);
+-    }
+-    av_free(text);
 +    return 0;
- }
++}
  
--static int parse_manifest_representation(AVFormatContext *s, const char *url,
--                                         xmlNodePtr node,
--                                         xmlNodePtr adaptionset_node,
--                                         xmlNodePtr mpd_baseurl_node,
--                                         xmlNodePtr period_baseurl_node,
--                                         xmlNodePtr period_segmenttemplate_node,
--                                         xmlNodePtr period_segmentlist_node,
--                                         xmlNodePtr fragment_template_node,
--                                         xmlNodePtr content_component_node,
--                                         xmlNodePtr adaptionset_baseurl_node,
--                                         xmlNodePtr adaptionset_segmentlist_node,
--                                         xmlNodePtr adaptionset_supplementalproperty_node)
+-    path = av_mallocz(tmp_max_url_size);
+-    tmp_str = av_mallocz(tmp_max_url_size);
+-    if (!tmp_str || !path) {
+-        updated = AVERROR(ENOMEM);
+-        goto end;
 +static av_cold int dash_parse_scantype(AVFormatContext *s,
 +                                       DASHParameters *par,
 +                                       const xmlChar *value)
@@ -1652,11 +1577,30 @@ index 71d79067a9..7609776769 100644
 +    } else {
 +        par->field_order = AV_FIELD_UNKNOWN;
 +        return 1;
-+    }
-+
+     }
+ 
+-    av_strlcpy (path, url, strlen(url) - size + 1);
+-    for (rootId = n_baseurl_nodes - 1; rootId > 0; rootId --) {
+-        if (!(node = baseurl_nodes[rootId])) {
+-            continue;
+-        }
+-        text = xmlNodeGetContent(node);
+-        if (ishttp(text)) {
+-            xmlFree(text);
+-            break;
+-        }
+-        xmlFree(text);
+-    }
 +    return 0;
 +}
-+
+ 
+-    node = baseurl_nodes[rootId];
+-    baseurl = xmlNodeGetContent(node);
+-    root_url = (av_strcasecmp(baseurl, "")) ? baseurl : path;
+-    if (node) {
+-        xmlNodeSetContent(node, root_url);
+-        updated = 1;
+-    }
 +static av_cold int dash_parse_parameters(AVFormatContext *s,
 +                                         DASHParameters *par,
 +                                         xmlAttrPtr attr,
@@ -1684,10 +1628,15 @@ index 71d79067a9..7609776769 100644
 +        return dash_parse_contenttype(s, par, value);
 +    else
 +        return 1;
-+
+ 
+-    size = strlen(root_url);
+-    isRootHttp = ishttp(root_url);
 +    return 0;
 +}
-+
+ 
+-    if (size > 0 && root_url[size - 1] != token) {
+-        av_strlcat(root_url, "/", size + 2);
+-        size += 2;
 +static av_cold int dash_parse_audiochannelconfiguration(AVFormatContext *s,
 +                                                        DASHParameters *par,
 +                                                        xmlNodePtr node)
@@ -1714,8 +1663,34 @@ index 71d79067a9..7609776769 100644
 +    } else {
 +        (void)av_get_extended_channel_layout(scheme.value, &par->channel_layout, &par->channels);
 +        dash_log_unknown_scheme(s, &scheme);
-+    }
-+
+     }
+ 
+-    for (i = 0; i < n_baseurl_nodes; ++i) {
+-        if (i == rootId) {
+-            continue;
+-        }
+-        text = xmlNodeGetContent(baseurl_nodes[i]);
+-        if (text && !av_strstart(text, "/", NULL)) {
+-            memset(tmp_str, 0, strlen(tmp_str));
+-            if (!ishttp(text) && isRootHttp) {
+-                av_strlcpy(tmp_str, root_url, size + 1);
+-            }
+-            start = (text[0] == token);
+-            if (start && av_stristr(tmp_str, text)) {
+-                char *p = tmp_str;
+-                if (!av_strncasecmp(tmp_str, "http://", 7)) {
+-                    p += 7;
+-                } else if (!av_strncasecmp(tmp_str, "https://", 8)) {
+-                    p += 8;
+-                }
+-                p = strchr(p, '/');
+-                memset(p + 1, 0, strlen(p));
+-            }
+-            av_strlcat(tmp_str, text + start, tmp_max_url_size);
+-            xmlNodeSetContent(baseurl_nodes[i], tmp_str);
+-            updated = 1;
+-            xmlFree(text);
+-        }
 +out:
 +    dash_free_scheme(&scheme);
 +    return ret;
@@ -1757,16 +1732,67 @@ index 71d79067a9..7609776769 100644
 +        av_dict_set(&as->metadata, "viewpoint", scheme.value, 0);
 +    } else {
 +        dash_log_unknown_scheme(s, &scheme);
-+    }
-+
+     }
+ 
+-end:
+-    if (tmp_max_url_size > *max_url_size) {
+-        *max_url_size = tmp_max_url_size;
 +out:
 +    dash_free_scheme(&scheme);
 +    return ret;
 +}
 +
 +static av_cold void dash_sync_time(AVFormatContext *s, const xmlChar *value)
++{
++    DASHContext *c = s->priv_data;
++    int ret = 0;
++
++    switch (c->utc_timing) {
++    case DASH_UTC_TIMING_LOCAL:
++    default:
++        ret = 1;
++        break;
++    case DASH_UTC_TIMING_HTTP_XSDATE:
++    case DASH_UTC_TIMING_HTTP_ISO:
++    case DASH_UTC_TIMING_HTTP_NTP:
++    case DASH_UTC_TIMING_NTP:
++    case DASH_UTC_TIMING_HTTP_HEAD:
++    case DASH_UTC_TIMING_DIRECT:
++        ret = AVERROR_PATCHWELCOME;
++        break;
+     }
+-    av_free(path);
+-    av_free(tmp_str);
+-    xmlFree(baseurl);
+-    return updated;
+ 
++    if (!ret) {
++        av_log(s, AV_LOG_DEBUG, "Time synchronized: %lf s\n",
++               (double)c->time_diff / AV_TIME_BASE);
++        c->utc_timing = -c->utc_timing;
++    } else if (ret < 0) {
++        av_log(s, AV_LOG_ERROR, "Failed to synchronized time: %s\n",
++               av_err2str(ret));
++    }
+ }
+ 
+-static int parse_manifest_representation(AVFormatContext *s, const char *url,
+-                                         xmlNodePtr node,
+-                                         xmlNodePtr adaptionset_node,
+-                                         xmlNodePtr mpd_baseurl_node,
+-                                         xmlNodePtr period_baseurl_node,
+-                                         xmlNodePtr period_segmenttemplate_node,
+-                                         xmlNodePtr period_segmentlist_node,
+-                                         xmlNodePtr fragment_template_node,
+-                                         xmlNodePtr content_component_node,
+-                                         xmlNodePtr adaptionset_baseurl_node,
+-                                         xmlNodePtr adaptionset_segmentlist_node,
+-                                         xmlNodePtr adaptionset_supplementalproperty_node)
++static av_cold int dash_parse_utctiming(AVFormatContext *s,
++                                        xmlNodePtr node)
  {
 -    int32_t ret = 0;
++    int ret = 0;
      DASHContext *c = s->priv_data;
 -    struct representation *rep = NULL;
 -    struct fragment *seg = NULL;
@@ -1794,38 +1820,6 @@ index 71d79067a9..7609776769 100644
 -    if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO &&
 -        type != AVMEDIA_TYPE_SUBTITLE) {
 -        av_log(s, AV_LOG_VERBOSE, "Parsing '%s' - skipp not supported representation type\n", url);
-+    int ret = 0;
-+
-+    switch (c->utc_timing) {
-+    case DASH_UTC_TIMING_LOCAL:
-+    default:
-+        ret = 1;
-+        break;
-+    case DASH_UTC_TIMING_HTTP_XSDATE:
-+    case DASH_UTC_TIMING_HTTP_ISO:
-+    case DASH_UTC_TIMING_HTTP_NTP:
-+    case DASH_UTC_TIMING_NTP:
-+    case DASH_UTC_TIMING_HTTP_HEAD:
-+    case DASH_UTC_TIMING_DIRECT:
-+        ret = AVERROR_PATCHWELCOME;
-+        break;
-+    }
-+
-+    if (!ret) {
-+        av_log(s, AV_LOG_DEBUG, "Time synchronized: %lf s\n",
-+               (double)c->time_diff / AV_TIME_BASE);
-+        c->utc_timing = -c->utc_timing;
-+    } else if (ret < 0) {
-+        av_log(s, AV_LOG_ERROR, "Failed to synchronized time: %s\n",
-+               av_err2str(ret));
-+    }
-+}
-+
-+static av_cold int dash_parse_utctiming(AVFormatContext *s,
-+                                        xmlNodePtr node)
-+{
-+    int ret = 0;
-+    DASHContext *c = s->priv_data;
 +    DASHScheme scheme;
 +    int utc_timing = c->utc_timing;
 +
@@ -2251,6 +2245,11 @@ index 71d79067a9..7609776769 100644
 +    }
 +
 +    *out_timeline = dash_ref_timeline(timeline);
++
++out:
++    dash_unref_timeline(timeline);
++    return ret;
++}
  
 -        fragment_timeline_node = find_child_node_by_name(adaptionset_segmentlist_node, "SegmentTimeline");
 -        if (!fragment_timeline_node)
@@ -2262,18 +2261,12 @@ index 71d79067a9..7609776769 100644
 -                if (ret < 0)
 -                    goto free;
 -                fragment_timeline_node = xmlNextElementSibling(fragment_timeline_node);
-+out:
-+    dash_unref_timeline(timeline);
-+    return ret;
-+}
-+
 +/* One init URL and list of template arguments. */
 +static av_cold int dash_parse_segmenttemplate(AVFormatContext *s,
 +                                              DASHPeriod *period,
 +                                              DASHTimeline **out_timeline,
 +                                              xmlNodePtr node)
 +{
-+    int proto_name_len;
 +    int ret = 0;
 +    DASHTimeline *timeline = NULL;
 +    int64_t duration = -1;
@@ -2324,7 +2317,6 @@ index 71d79067a9..7609776769 100644
 +        goto out;
 +    }
 +
-+    proto_name_len = strlen(proto_name);
 +    if (0 <= duration) {
 +        DASHSegmentTemplate *g;
 +
@@ -2401,11 +2393,11 @@ index 71d79067a9..7609776769 100644
 +    init_url = NULL;
 +    timeline->u.templates.master.url = media_url;
 +    media_url = NULL;
- 
++
 +    timeline->u.templates.master.range = DASH_RANGE_INITALIZER;
 +
 +    *out_timeline = dash_ref_timeline(timeline);
-+
+ 
 +out:
 +    xml_free(init_url);
 +    xml_free(media_url);
@@ -2510,36 +2502,8 @@ index 71d79067a9..7609776769 100644
 -    xmlNodePtr node = NULL;
 -
 -    ret = parse_manifest_adaptationset_attr(s, adaptionset_node);
--    if (ret < 0)
--        return ret;
 +    enum { MAX_DIGITS = 20 };
- 
--    node = xmlFirstElementChild(adaptionset_node);
--    while (node) {
--        if (!av_strcasecmp(node->name, "SegmentTemplate")) {
--            fragment_template_node = node;
--        } else if (!av_strcasecmp(node->name, "ContentComponent")) {
--            content_component_node = node;
--        } else if (!av_strcasecmp(node->name, "BaseURL")) {
--            adaptionset_baseurl_node = node;
--        } else if (!av_strcasecmp(node->name, "SegmentList")) {
--            adaptionset_segmentlist_node = node;
--        } else if (!av_strcasecmp(node->name, "SupplementalProperty")) {
--            adaptionset_supplementalproperty_node = node;
--        } else if (!av_strcasecmp(node->name, "Representation")) {
--            ret = parse_manifest_representation(s, url, node,
--                                                adaptionset_node,
--                                                mpd_baseurl_node,
--                                                period_baseurl_node,
--                                                period_segmenttemplate_node,
--                                                period_segmentlist_node,
--                                                fragment_template_node,
--                                                content_component_node,
--                                                adaptionset_baseurl_node,
--                                                adaptionset_segmentlist_node,
--                                                adaptionset_supplementalproperty_node);
--            if (ret < 0)
--                goto err;
++
 +    size_t base_size;
 +    size_t $RepresentationID$_size = strlen($RepresentationID$);
 +    size_t max_url_size;
@@ -2608,44 +2572,83 @@ index 71d79067a9..7609776769 100644
 +            /* Copy remaining. */
 +            strcpy(u, template);
 +            break;
-         }
--        node = xmlNextElementSibling(node);
-     }
- 
--err:
--    xmlFree(c->adaptionset_lang);
--    c->adaptionset_lang = NULL;
--    return ret;
++        }
++    }
++
 +    return url;
- }
- 
--static int parse_programinformation(AVFormatContext *s, xmlNodePtr node)
++}
++
 +static int64_t dash_subdemuxer_seek(void *opaque, int64_t offset, int whence)
- {
--    xmlChar *val = NULL;
++{
 +    DASHRepresentation *rep = opaque;
 +    return avio_seek(rep->segments[0].pb, offset, whence);
 +}
++
++int ff_stream_encode_params_copy(AVStream *dst, const AVStream *src)
++{
++    int ret;
++
++    dst->id                  = src->id;
++    dst->time_base           = src->time_base;
++    dst->nb_frames           = src->nb_frames;
++    dst->disposition         = src->disposition;
++    dst->sample_aspect_ratio = src->sample_aspect_ratio;
++    dst->avg_frame_rate      = src->avg_frame_rate;
++    dst->r_frame_rate        = src->r_frame_rate;
++
++    av_dict_free(&dst->metadata);
++    ret = av_dict_copy(&dst->metadata, src->metadata, 0);
+     if (ret < 0)
+         return ret;
  
--    node = xmlFirstElementChild(node);
+-    node = xmlFirstElementChild(adaptionset_node);
 -    while (node) {
--        if (!av_strcasecmp(node->name, "Title")) {
--            val = xmlNodeGetContent(node);
--            if (val) {
--                av_dict_set(&s->metadata, "Title", val, 0);
--            }
--        } else if (!av_strcasecmp(node->name, "Source")) {
--            val = xmlNodeGetContent(node);
--            if (val) {
--                av_dict_set(&s->metadata, "Source", val, 0);
+-        if (!av_strcasecmp(node->name, "SegmentTemplate")) {
+-            fragment_template_node = node;
+-        } else if (!av_strcasecmp(node->name, "ContentComponent")) {
+-            content_component_node = node;
+-        } else if (!av_strcasecmp(node->name, "BaseURL")) {
+-            adaptionset_baseurl_node = node;
+-        } else if (!av_strcasecmp(node->name, "SegmentList")) {
+-            adaptionset_segmentlist_node = node;
+-        } else if (!av_strcasecmp(node->name, "SupplementalProperty")) {
+-            adaptionset_supplementalproperty_node = node;
+-        } else if (!av_strcasecmp(node->name, "Representation")) {
+-            ret = parse_manifest_representation(s, url, node,
+-                                                adaptionset_node,
+-                                                mpd_baseurl_node,
+-                                                period_baseurl_node,
+-                                                period_segmenttemplate_node,
+-                                                period_segmentlist_node,
+-                                                fragment_template_node,
+-                                                content_component_node,
+-                                                adaptionset_baseurl_node,
+-                                                adaptionset_segmentlist_node,
+-                                                adaptionset_supplementalproperty_node);
+-            if (ret < 0)
+-                goto err;
+-        }
+-        node = xmlNextElementSibling(node);
++    ret = avcodec_parameters_copy(dst->codecpar, src->codecpar);
++    if (ret < 0)
++        return ret;
++
++    ret = ff_stream_side_data_copy(dst, src);
++    if (ret < 0)
++        return ret;
++
++    return 0;
++}
++
 +static av_cold int dash_copy_stream_props(AVStream *slave, AVStream *master)
 +{
 +    int ret;
 +
 +    master->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
++
 +    slave->event_flags |= AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
 +
-+    slave->internal->need_context_update = 1;
++    //slave->internal->need_context_update = 1;
 +
 +    if ((ret = ff_stream_encode_params_copy(slave, master)) < 0)
 +        return ret;
@@ -2666,11 +2669,16 @@ index 71d79067a9..7609776769 100644
 +        if (period->period->start_ts <= timestamp &&
 +                                        timestamp < period->period->end_ts)
 +            return period;
-+    }
-+
+     }
+ 
+-err:
+-    xmlFree(c->adaptionset_lang);
+-    c->adaptionset_lang = NULL;
+-    return ret;
 +    return NULL;
-+}
-+
+ }
+ 
+-static int parse_programinformation(AVFormatContext *s, xmlNodePtr node)
 +/**
 + * Update everything to make outside context of representation.
 + *
@@ -2679,12 +2687,24 @@ index 71d79067a9..7609776769 100644
 + * - rep->cur_period changed.
 + */
 +static av_cold int dash_subdemuxer_update(DASHRepresentation *rep)
-+{
+ {
+-    xmlChar *val = NULL;
 +    int ret;
 +    void *p;
 +    AVFormatContext *oc = rep->oc;
 +    AVFormatContext *ic = rep->ic;
-+
+ 
+-    node = xmlFirstElementChild(node);
+-    while (node) {
+-        if (!av_strcasecmp(node->name, "Title")) {
+-            val = xmlNodeGetContent(node);
+-            if (val) {
+-                av_dict_set(&s->metadata, "Title", val, 0);
+-            }
+-        } else if (!av_strcasecmp(node->name, "Source")) {
+-            val = xmlNodeGetContent(node);
+-            if (val) {
+-                av_dict_set(&s->metadata, "Source", val, 0);
 +    if (rep->nb_streams < ic->nb_streams) {
 +        if (!(p = av_realloc(rep->ostreams, ic->nb_streams * sizeof(*rep->ostreams))))
 +            return AVERROR(ENOMEM);
@@ -2726,7 +2746,7 @@ index 71d79067a9..7609776769 100644
 +        if (period) {
 +            const DASHParameters *par = &period->par;
 +            uint8_t *side_data;
-+            int side_data_size;
++            size_t side_data_size;
 +
 +            side_data = av_encryption_init_info_add_side_data(period->as->init_info, &side_data_size);
 +            if (!side_data)
@@ -2763,8 +2783,7 @@ index 71d79067a9..7609776769 100644
 +                if (!codecpar->sample_rate)
 +                    codecpar->sample_rate = par->sample_rate;
 +
-+                if (!codecpar->channels && !codecpar->channel_layout)
-+                    codecpar->channels = par->channels,
++                if (!codecpar->ch_layout)
 +                    codecpar->channel_layout = par->channel_layout;
 +
 +                if (!codecpar->width && !codecpar->height)
@@ -2800,7 +2819,7 @@ index 71d79067a9..7609776769 100644
 +
 +        av_dict_copy(&ost->metadata, metadata, AV_DICT_MULTIKEY);
 +        av_dict_free(&metadata);
-+    }
+     }
 +
 +    for (unsigned stream_index = ic->nb_streams;
 +         stream_index < rep->nb_streams;
@@ -2823,7 +2842,7 @@ index 71d79067a9..7609776769 100644
 +
 +        if ((ret = dash_copy_stream_props(ost, ist)) < 0)
 +            return ret;
-     }
++    }
 +
 +    rep->nb_streams = FFMAX(rep->nb_streams, ic->nb_streams);
 +
@@ -3268,11 +3287,11 @@ index 71d79067a9..7609776769 100644
 +    goto open_segment;
 +}
 +
-+    av_log(s, AV_LOG_ERROR,
 +static av_cold int dash_subdemuxer_block_io_open(AVFormatContext *s, AVIOContext **pb, const char *url,
 +                                                 int flags, AVDictionary **opts)
 +{
 +    DASHContext *c = s->priv_data;
++    av_log(s, AV_LOG_ERROR,
 +           "Opening external resource '%s' from DASH segment '%s' has been blocked for security reasons",
 +           url, c->location);
 +    av_log(s, AV_LOG_VERBOSE,
@@ -3301,27 +3320,27 @@ index 71d79067a9..7609776769 100644
 +        goto out;
 +    }
 +
-+    if ((ret = ffio_init_context(&rep->ic_pb, buf, buf_size, 0, rep,
-+                                 dash_subdemuxer_read, NULL, dash_subdemuxer_seek) < 0))
++    if ((ret = ffio_init_context((FFIOContext *)&rep->ic_pb, buf, buf_size, 0, rep,
++                                 dash_subdemuxer_read, NULL, dash_subdemuxer_seek)) < 0)
 +    {
 +        /* Note: We purposely do not free I/O buffer since documentation says
 +         * nothing about it. We presume inputs are freed on error. Just like in
 +         * case av_dict_set() and avformat_alloc_context()... */
 +        goto out;
-+    }
+     }
 +    rep->ic_pb.seekable = 0;
 +
 +    /* Padding bytes must be zeroed out. */
 +    memset(buf + buf_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-+
-+    if (!(rep->ic = avformat_alloc_context())) {
-+        ret = AVERROR(ENOMEM);
-+        goto out;
-     }
  
 -    av_bprint_finalize(&buf, NULL);
 -    if (close_in) {
 -        avio_close(in);
++    if (!(rep->ic = avformat_alloc_context())) {
++        ret = AVERROR(ENOMEM);
++        goto out;
+     }
++
 +    rep->ic->pb = &rep->ic_pb;
 +    rep->ic->interrupt_callback = s->interrupt_callback;
 +
@@ -3343,17 +3362,18 @@ index 71d79067a9..7609776769 100644
 +out:
 +    if (ret < 0)
 +        dash_subdemuxer_close(rep);
-+    return ret;
-+}
-+
+     return ret;
+ }
+ 
+-static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
 +/**
 + * Open the real context.
 + */
 +static av_cold int dash_subdemuxer_open(DASHRepresentation *rep)
-+{
+ {
 +    int ret = 0;
 +    AVFormatContext *s = rep->oc;
-+    AVInputFormat *iformat = NULL;
++    const AVInputFormat *iformat = NULL;
 +
 +    av_log(s, AV_LOG_DEBUG, "Opening representation '%s'\n", rep->id);
 +
@@ -3363,7 +3383,7 @@ index 71d79067a9..7609776769 100644
 +    if ((ret = av_probe_input_buffer(&rep->ic_pb, &iformat, NULL, NULL, 0, 0)) < 0) {
 +        av_log(s, AV_LOG_ERROR, "Probe failed for representation '%s'\n", rep->id);
 +        goto out;
-     }
++    }
 +
 +    if ((ret = avformat_open_input(&rep->ic, NULL, iformat, NULL)) < 0)
 +        goto out;
@@ -3383,12 +3403,11 @@ index 71d79067a9..7609776769 100644
 +out:
 +    if (ret < 0)
 +        dash_subdemuxer_close(rep);
-     return ret;
- }
- 
--static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
++    return ret;
++}
++
 +static av_cold int dash_subdemuxer_init(DASHRepresentation *rep)
- {
++{
 +    int ret;
 +    AVFormatContext *s = rep->oc;
      DASHContext *c = s->priv_data;
@@ -5027,7 +5046,7 @@ index 71d79067a9..7609776769 100644
  };
  
  static const AVClass dash_class = {
-@@ -2368,4 +3155,5 @@ const FFInputFormat ff_dash_demuxer = {
+@@ -2368,4 +3183,5 @@ const FFInputFormat ff_dash_demuxer = {
      .read_packet    = dash_read_packet,
      .read_close     = dash_close,
      .read_seek      = dash_read_seek,
