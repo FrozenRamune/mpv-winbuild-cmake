@@ -1,5 +1,5 @@
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..3ca461e977 100644
+index 71d79067a9..4b4f34563a 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -1,7 +1,8 @@
@@ -2828,7 +2828,7 @@ index 71d79067a9..3ca461e977 100644
 +                    codecpar->sample_rate = par->sample_rate;
 +
 +                if (!codecpar->ch_layout.nb_channels)
-+                    codecpar->ch_layout = par->channel_layout;
++                    codecpar->ch_layout.nb_channels = par->channel_layout;
 +
 +                if (!codecpar->width && !codecpar->height)
 +                    codecpar->width = par->width,
@@ -3370,9 +3370,9 @@ index 71d79067a9..3ca461e977 100644
 +    /*if ((ret = ffio_init_context((FFIOContext *)&rep->ic_pb, buf, buf_size, 0, rep,
 +                                 dash_subdemuxer_read, NULL, dash_subdemuxer_seek)) < 0)
 +    {
-+        /* Note: We purposely do not free I/O buffer since documentation says
-+         * nothing about it. We presume inputs are freed on error. Just like in
-+         * case av_dict_set() and avformat_alloc_context()... */
++        // * Note: We purposely do not free I/O buffer since documentation says
++        // * nothing about it. We presume inputs are freed on error. Just like in
++        // * case av_dict_set() and avformat_alloc_context()...
 +        goto out;
 +    }*/
 +    ffio_init_context((FFIOContext *)&rep->ic_pb, buf, buf_size, 0, rep,
