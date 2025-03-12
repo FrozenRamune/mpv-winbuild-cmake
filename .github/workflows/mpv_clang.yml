@@ -115,11 +115,6 @@ jobs:
           mkdir -p release_$BIT
           ninja -C build_$BIT mpv-packaging; mv build_$BIT/mpv*.7z release_$BIT
 
-      - name: Copying ffmpeg
-        run: |
-          hash=$(git -C src_packages/ffmpeg rev-parse --short HEAD)
-          7z a -m0=lzma2 -mx=9 -ms=on release_$BIT/ffmpeg-${{ env.arch }}${{ env.x86_64_level }}-git-$hash.7z ./build_$BIT/$BIT-w64-mingw32/bin/ffmpeg.exe
-
       - name: Collecting logs
         if: always()
         run: |
@@ -266,20 +261,6 @@ jobs:
           )
           for file in release/*.7z; do curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -X POST -H "Accept: application/vnd.github.v3+json" -H "Content-Type: $(file -b --mime-type $file)" https://uploads.github.com/repos/FrozenRamune/mpv-winbuild-cmake/releases/$id/assets?name=$(basename $file) --data-binary @$file; done
 
-      - name: Pruning tags
-        continue-on-error: true
-        run: |
-          # Keep latest 30 tags/releases
-          git fetch --tags
-          tag_list=($(git tag | sort -r))
-          old=${tag_list[@]:30}
-          for tag in ${old[@]}; do
-            id=$(curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -s -X GET -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/releases/tags/$tag | jq -r '.id')
-            curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -s -X DELETE -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/releases/$id
-            git tag -d $tag
-          done
-          git push --tags --prune https://FrozenRamune:$GH_TOKEN@github.com/FrozenRamune/mpv-winbuild-cmake
-
       - name: Delete releases cache
         if: ${{ github.event.inputs.github_release == 'false' || steps.upload_packages_gh.outcome == 'success' }}
         run: |
@@ -287,27 +268,6 @@ jobs:
           curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -s -o /dev/null -X DELETE -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/actions/caches?key=$release_x86_64_key
           curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -s -o /dev/null -X DELETE -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/actions/caches?key=$release_x86_64_v3_key
           curl -u FrozenRamune:$GH_TOKEN $CURL_RETRIES -s -o /dev/null -X DELETE -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/actions/caches?key=$release_aarch64_key
-
-  call_workflow:
-    name: Run mpv_gcc
-    runs-on: ubuntu-latest
-    needs: build_mpv
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_COMMAND: ${{ github.event.inputs.command }}
-    steps:
-      - name: Run mpv_gcc.yml
-        run: |
-          curl -u FrozenRamune:$GH_TOKEN -X POST -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/FrozenRamune/mpv-winbuild-cmake/actions/workflows/mpv_gcc.yml/dispatches -d @- <<EOF
-          {
-            "ref": "master",
-            "inputs": {
-              "github_release": "true",
-              "mpv_tarball": "false",
-              "command": "$GH_COMMAND"
-            }
-          }
-          EOF
 
   gist:
     name: Gist
