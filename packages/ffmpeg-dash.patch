@@ -1,0 +1,85 @@
+diff --git a/libavcodec/decode.c b/libavcodec/decode.c
+index 828013197c..9b5e2285b4 100644
+--- a/libavcodec/decode.c
++++ b/libavcodec/decode.c
+@@ -351,6 +351,11 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
+         return AVERROR(EAGAIN);
+     }
+ 
++    if(!frame->opaque) {
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, skip_samples is %d", *(frame->opaque));
++        avci->skip_samples = *(frame->opaque);
++    }
++
+     if (avci->skip_samples > 0) {
+         if (frame->nb_samples <= avci->skip_samples){
+             *discarded_samples += frame->nb_samples;
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 71d79067a9..b72d1031a2 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -160,6 +160,8 @@ typedef struct DASHContext {
+     int is_init_section_common_audio;
+     int is_init_section_common_subtitle;
+ 
++    int encoder_delay_samples;
++    int padding_samples;
+ } DASHContext;
+ 
+ static int ishttp(char *url)
+@@ -2197,6 +2199,33 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+     if (!cur) {
+         return AVERROR_INVALIDDATA;
+     }
++
++    int skip_samples = -1;
++
++    if(cur->cur_seq_no == 0) {
++        if(c->encoder_delay_samples != -1) {
++            av_log(pls->parent, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d", c->encoder_delay_samples);
++            skip_samples = c->encoder_delay_samples;
++        } else {
++            av_log(pls->parent, AV_LOG_DEBUG, "proccessing first segment, use deafult skip_samples");
++        }
++    } else {
++        if(c->padding_samples != -1) {
++            av_log(pls->parent, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d", c->padding_samples);
++            skip_samples = c->padding_samples;
++        } else if(c->encoder_delay_samples != -1) {
++            av_log(pls->parent, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d", c->encoder_delay_samples);
++            skip_samples = c->encoder_delay_samples;
++        } else {
++            av_log(pls->parent, AV_LOG_DEBUG, "proccessing first segment, it skips no frame.");
++            skip_samples = 0;
++        }
++    }
++
++    if(skip_samples >= 0) {
++        *(pkt->opaque) = skip_samples;
++    }
++
+     while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
+         ret = av_read_frame(cur->ctx, pkt);
+         if (ret >= 0) {
+@@ -2346,6 +2375,8 @@ static const AVOption dash_options[] = {
+         {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
+         INT_MIN, INT_MAX, FLAGS},
+     { "cenc_decryption_key", "Media decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
++    { "encoder_delay_samples", "encoder delay", OFFSET(encoder_delay_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, 0},
++    { "padding_samples", "padding", OFFSET(padding_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, 0},
+     {NULL}
+ };
+ 
+diff --git a/libavformat/demux.c b/libavformat/demux.c
+index 4fd22c4934..9eb6477ab2 100644
+--- a/libavformat/demux.c
++++ b/libavformat/demux.c
+@@ -2101,6 +2101,8 @@ static int try_decode_frame(AVFormatContext *s, AVStream *st,
+     if (!frame)
+         return AVERROR(ENOMEM);
+ 
++    avctx->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
++
+     if (!avcodec_is_open(avctx) &&
+         sti->info->found_decoder <= 0 &&
+         (st->codecpar->codec_id != -sti->info->found_decoder || !st->codecpar->codec_id)) {
