@@ -63,7 +63,10 @@ jobs:
       - name: Installing dependencies
         shell: sh
         run: |
-          pacman -SyU --disable-sandbox --noconfirm https://archive.archlinux.org/packages/g/gettext/gettext-0.23.1-2-x86_64.pkg.tar.zst
+          mkdir tmp && cd tmp
+          wget https://dl-3.alpinelinux.org/alpine/v3.9/main/x86_64/gettext-0.19.8.1-r4.apk
+          apk apk add gettext-0.19.8.1-r4.apk --no-cache
+          cd ../ && rm -rf ./tmp
 
       - uses: actions/checkout@main
         with:
