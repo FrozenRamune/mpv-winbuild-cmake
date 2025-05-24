@@ -63,7 +63,7 @@ jobs:
       - name: Installing dependencies
         shell: sh
         run: |
-          pacman -U -Sy --disable-sandbox --noconfirm https://archive.archlinux.org/packages/g/gettext/gettext-0.23.1-2-x86_64.pkg.tar.zst
+          pacman -SyU --disable-sandbox --noconfirm https://archive.archlinux.org/packages/g/gettext/gettext-0.23.1-2-x86_64.pkg.tar.zst
 
       - uses: actions/checkout@main
         with:
