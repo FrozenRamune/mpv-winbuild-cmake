@@ -110,19 +110,19 @@ jobs:
           $MPV_TARBALL && ninja -C build_$BIT mpv-release || ninja -C build_$BIT mpv
           $MPV_TARBALL && echo "mpv_ver=$(cat build_$BIT/packages/mpv-release-prefix/VERSION)" >> $GITHUB_OUTPUT || echo "mpv_ver=UNKNOWN" >> $GITHUB_OUTPUT
 
-      - name: Packaging mpv
-        run: |
-          mkdir -p release_$BIT
-          ninja -C build_$BIT mpv-packaging; mv build_$BIT/mpv*.7z release_$BIT
-
+      - name: Debug
+        if: ${{ always() }}
+        uses: mxschmitt/action-tmate@v3
+      
       - name: Copying ffmpeg
         run: |
           hash=$(git -C src_packages/ffmpeg rev-parse --short HEAD)
           7z a -m0=lzma2 -mx=9 -ms=on release_$BIT/ffmpeg-${{ env.arch }}${{ env.x86_64_level }}-git-$hash.7z ./build_$BIT/$BIT-w64-mingw32/bin/ffmpeg.exe
 
-      - name: Debug
-        if: ${{ always() }}
-        uses: mxschmitt/action-tmate@v3
+      - name: Packaging mpv
+        run: |
+          mkdir -p release_$BIT
+          ninja -C build_$BIT mpv-packaging; mv build_$BIT/mpv*.7z release_$BIT
 
       - name: Collecting logs
         if: always()
