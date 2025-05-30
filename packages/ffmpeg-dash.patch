@@ -1,21 +1,23 @@
 diff --git a/libavcodec/decode.c b/libavcodec/decode.c
-index 828013197c..c72f680375 100644
+index 148af71ac4..249158df10 100644
 --- a/libavcodec/decode.c
 +++ b/libavcodec/decode.c
-@@ -351,6 +351,11 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
+@@ -351,6 +351,13 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
          return AVERROR(EAGAIN);
      }
  
-+    if(!frame->opaque) {
++    if(frame->opaque) {
 +        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, skip_samples is %d", *((int*)frame->opaque));
 +        avci->skip_samples = *((int*)frame->opaque);
++    } else {
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d", avci->skip_samples);
 +    }
 +
      if (avci->skip_samples > 0) {
          if (frame->nb_samples <= avci->skip_samples){
              *discarded_samples += frame->nb_samples;
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..09cc89fef7 100644
+index 71d79067a9..dbfcd2c4ef 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -160,6 +160,8 @@ typedef struct DASHContext {
@@ -46,16 +48,16 @@ index 71d79067a9..09cc89fef7 100644
 +            av_log(s, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d", c->padding_samples);
 +            skip_samples = c->padding_samples;
 +        } else if(c->encoder_delay_samples != -1) {
-+            av_log(s, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d", c->encoder_delay_samples);
++            av_log(s, AV_LOG_DEBUG, "proccessing segment, encoder_delay_samples is %d", c->encoder_delay_samples);
 +            skip_samples = c->encoder_delay_samples;
 +        } else {
-+            av_log(s, AV_LOG_DEBUG, "proccessing first segment, it skips no frame.");
++            av_log(s, AV_LOG_DEBUG, "proccessing segment, it skips no frame.");
 +            skip_samples = 0;
 +        }
 +    }
 +
 +    if(skip_samples >= 0) {
-+        *((int*)pkt->opaque) = skip_samples;
++        (int*)pkt->opaque = &skip_samples;
 +    }
 +
      while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
@@ -65,8 +67,8 @@ index 71d79067a9..09cc89fef7 100644
          {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
          INT_MIN, INT_MAX, FLAGS},
      { "cenc_decryption_key", "Media decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
-+    { "encoder_delay_samples", "encoder delay", OFFSET(encoder_delay_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, 0},
-+    { "padding_samples", "padding", OFFSET(padding_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, 0},
++    { "encoder_delay_samples", "encoder delay", OFFSET(encoder_delay_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, .flags = FLAGS },
++    { "padding_samples", "padding", OFFSET(padding_samples), AV_OPT_TYPE_INT, {.i64 = -1}, -1, INT_MAX, .flags = FLAGS },
      {NULL}
  };
  
