@@ -17,7 +17,7 @@ index 148af71ac4..249158df10 100644
          if (frame->nb_samples <= avci->skip_samples){
              *discarded_samples += frame->nb_samples;
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..dbfcd2c4ef 100644
+index 71d79067a9..bf093771cc 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -160,6 +160,8 @@ typedef struct DASHContext {
@@ -57,7 +57,7 @@ index 71d79067a9..dbfcd2c4ef 100644
 +    }
 +
 +    if(skip_samples >= 0) {
-+        (int*)pkt->opaque = &skip_samples;
++        pkt->opaque = &skip_samples;
 +    }
 +
      while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
