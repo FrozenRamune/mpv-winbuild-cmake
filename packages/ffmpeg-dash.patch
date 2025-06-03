@@ -1,5 +1,5 @@
 diff --git a/libavcodec/decode.c b/libavcodec/decode.c
-index 148af71ac4..ec58a29bf4 100644
+index 148af71ac4..f4e818e9a3 100644
 --- a/libavcodec/decode.c
 +++ b/libavcodec/decode.c
 @@ -351,6 +351,13 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
@@ -16,6 +16,20 @@ index 148af71ac4..ec58a29bf4 100644
      if (avci->skip_samples > 0) {
          if (frame->nb_samples <= avci->skip_samples){
              *discarded_samples += frame->nb_samples;
+@@ -453,6 +460,13 @@ FF_ENABLE_DEPRECATION_WARNINGS
+     }
+     emms_c();
+ 
++    if(pkt->opaque) {
++        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, skip_samples is %d\n", *((int*)pkt->opaque));
++        frame->opaque = pkt->opaque;
++    } else {
++        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is not found\n");
++    }
++
+     if (avctx->codec->type == AVMEDIA_TYPE_VIDEO) {
+         ret = (!got_frame || frame->flags & AV_FRAME_FLAG_DISCARD)
+                           ? AVERROR(EAGAIN)
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
 index 71d79067a9..bc934087fb 100644
 --- a/libavformat/dashdec.c
@@ -72,21 +86,3 @@ index 71d79067a9..bc934087fb 100644
      {NULL}
  };
  
-diff --git a/libavformat/demux.c b/libavformat/demux.c
-index 4fd22c4934..0a2db6f233 100644
---- a/libavformat/demux.c
-+++ b/libavformat/demux.c
-@@ -2101,6 +2101,13 @@ static int try_decode_frame(AVFormatContext *s, AVStream *st,
-     if (!frame)
-         return AVERROR(ENOMEM);
- 
-+    if(pkt->opaque) {
-+        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, skip_samples is %d\n", *((int*)pkt->opaque));
-+        frame->opaque = pkt->opaque;
-+    } else {
-+        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is not found\n");
-+    }
-+
-     if (!avcodec_is_open(avctx) &&
-         sti->info->found_decoder <= 0 &&
-         (st->codecpar->codec_id != -sti->info->found_decoder || !st->codecpar->codec_id)) {
