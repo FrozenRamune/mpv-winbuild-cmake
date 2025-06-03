@@ -73,7 +73,7 @@ index 71d79067a9..bc934087fb 100644
  };
  
 diff --git a/libavformat/demux.c b/libavformat/demux.c
-index 4fd22c4934..690acb09ea 100644
+index 4fd22c4934..0a2db6f233 100644
 --- a/libavformat/demux.c
 +++ b/libavformat/demux.c
 @@ -2101,6 +2101,13 @@ static int try_decode_frame(AVFormatContext *s, AVStream *st,
@@ -84,7 +84,7 @@ index 4fd22c4934..690acb09ea 100644
 +        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, skip_samples is %d\n", *((int*)pkt->opaque));
 +        frame->opaque = pkt->opaque;
 +    } else {
-+        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d\n", avci->skip_samples);
++        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is not found\n");
 +    }
 +
      if (!avcodec_is_open(avctx) &&
