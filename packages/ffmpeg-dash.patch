@@ -1,5 +1,5 @@
 diff --git a/libavcodec/decode.c b/libavcodec/decode.c
-index 148af71ac4..249158df10 100644
+index 148af71ac4..ec58a29bf4 100644
 --- a/libavcodec/decode.c
 +++ b/libavcodec/decode.c
 @@ -351,6 +351,13 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
@@ -7,17 +7,17 @@ index 148af71ac4..249158df10 100644
      }
  
 +    if(frame->opaque) {
-+        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, skip_samples is %d", *((int*)frame->opaque));
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, skip_samples is %d\n", *((int*)frame->opaque));
 +        avci->skip_samples = *((int*)frame->opaque);
 +    } else {
-+        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d", avci->skip_samples);
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d\n", avci->skip_samples);
 +    }
 +
      if (avci->skip_samples > 0) {
          if (frame->nb_samples <= avci->skip_samples){
              *discarded_samples += frame->nb_samples;
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..bf093771cc 100644
+index 71d79067a9..bc934087fb 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -160,6 +160,8 @@ typedef struct DASHContext {
@@ -38,20 +38,20 @@ index 71d79067a9..bf093771cc 100644
 +
 +    if(cur->cur_seq_no == 0) {
 +        if(c->encoder_delay_samples != -1) {
-+            av_log(s, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d", c->encoder_delay_samples);
++            av_log(s, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
 +            skip_samples = c->encoder_delay_samples;
 +        } else {
-+            av_log(s, AV_LOG_DEBUG, "proccessing first segment, use deafult skip_samples");
++            av_log(s, AV_LOG_DEBUG, "proccessing first segment, use deafult skip_samples\n");
 +        }
 +    } else {
 +        if(c->padding_samples != -1) {
-+            av_log(s, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d", c->padding_samples);
++            av_log(s, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d\n", c->padding_samples);
 +            skip_samples = c->padding_samples;
 +        } else if(c->encoder_delay_samples != -1) {
-+            av_log(s, AV_LOG_DEBUG, "proccessing segment, encoder_delay_samples is %d", c->encoder_delay_samples);
++            av_log(s, AV_LOG_DEBUG, "proccessing segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
 +            skip_samples = c->encoder_delay_samples;
 +        } else {
-+            av_log(s, AV_LOG_DEBUG, "proccessing segment, it skips no frame.");
++            av_log(s, AV_LOG_DEBUG, "proccessing segment, it skips no frame.\n");
 +            skip_samples = 0;
 +        }
 +    }
@@ -73,14 +73,19 @@ index 71d79067a9..bf093771cc 100644
  };
  
 diff --git a/libavformat/demux.c b/libavformat/demux.c
-index 4fd22c4934..9eb6477ab2 100644
+index 4fd22c4934..690acb09ea 100644
 --- a/libavformat/demux.c
 +++ b/libavformat/demux.c
-@@ -2101,6 +2101,8 @@ static int try_decode_frame(AVFormatContext *s, AVStream *st,
+@@ -2101,6 +2101,13 @@ static int try_decode_frame(AVFormatContext *s, AVStream *st,
      if (!frame)
          return AVERROR(ENOMEM);
  
-+    avctx->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
++    if(pkt->opaque) {
++        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, skip_samples is %d\n", *((int*)pkt->opaque));
++        frame->opaque = pkt->opaque;
++    } else {
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d\n", avci->skip_samples);
++    }
 +
      if (!avcodec_is_open(avctx) &&
          sti->info->found_decoder <= 0 &&
