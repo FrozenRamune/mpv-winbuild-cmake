@@ -1,5 +1,5 @@
 diff --git a/libavcodec/decode.c b/libavcodec/decode.c
-index 148af71ac4..f4e818e9a3 100644
+index 828013197c..baa781f34b 100644
 --- a/libavcodec/decode.c
 +++ b/libavcodec/decode.c
 @@ -351,6 +351,13 @@ static int discard_samples(AVCodecContext *avctx, AVFrame *frame, int64_t *disca
@@ -7,7 +7,7 @@ index 148af71ac4..f4e818e9a3 100644
      }
  
 +    if(frame->opaque) {
-+        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, skip_samples is %d\n", *((int*)frame->opaque));
++        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is found, *frame->opaque is %d\n", *((int*)frame->opaque));
 +        avci->skip_samples = *((int*)frame->opaque);
 +    } else {
 +        av_log(avctx, AV_LOG_DEBUG, "frame->opaque is not found, skip_samples is %d\n", avci->skip_samples);
@@ -21,7 +21,7 @@ index 148af71ac4..f4e818e9a3 100644
      emms_c();
  
 +    if(pkt->opaque) {
-+        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, skip_samples is %d\n", *((int*)pkt->opaque));
++        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is found, pkt->opaque is %d\n", *((int*)pkt->opaque));
 +        frame->opaque = pkt->opaque;
 +    } else {
 +        av_log(avctx, AV_LOG_DEBUG, "pkt->opaque is not found\n");
@@ -31,7 +31,7 @@ index 148af71ac4..f4e818e9a3 100644
          ret = (!got_frame || frame->flags & AV_FRAME_FLAG_DISCARD)
                            ? AVERROR(EAGAIN)
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 71d79067a9..f2cefd9bd3 100644
+index 71d79067a9..2fc2fd6890 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -160,6 +160,8 @@ typedef struct DASHContext {
@@ -43,7 +43,7 @@ index 71d79067a9..f2cefd9bd3 100644
  } DASHContext;
  
  static int ishttp(char *url)
-@@ -2197,12 +2199,40 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2197,12 +2199,46 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
      if (!cur) {
          return AVERROR_INVALIDDATA;
      }
@@ -55,36 +55,42 @@ index 71d79067a9..f2cefd9bd3 100644
              cur->cur_timestamp = av_rescale(pkt->pts, (int64_t)cur->ctx->streams[0]->time_base.num * 90000, cur->ctx->streams[0]->time_base.den);
              pkt->stream_index = cur->stream_index;
 +
-+            int skip_samples = -1;
++            av_log(s, AV_LOG_DEBUG, "pkt->pos: %d\n", pkt->pos);
 +
-+            if(cur->cur_seq_no == 0) {
-+                if(c->encoder_delay_samples != -1) {
-+                    av_log(s, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
-+                    skip_samples = c->encoder_delay_samples;
++            if(pkt->pos == 0) {
++
++                int skip_samples = -1;
++
++                if(cur->cur_seq_no == 0) {
++                    if(c->encoder_delay_samples != -1) {
++                        av_log(s, AV_LOG_DEBUG, "proccessing first segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
++                        skip_samples = c->encoder_delay_samples;
++                    } else {
++                        av_log(s, AV_LOG_DEBUG, "proccessing first segment, use deafult skip_samples\n");
++                    }
 +                } else {
-+                    av_log(s, AV_LOG_DEBUG, "proccessing first segment, use deafult skip_samples\n");
++                    if(c->padding_samples != -1) {
++                        av_log(s, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d\n", c->padding_samples);
++                        skip_samples = c->padding_samples;
++                    } else if(c->encoder_delay_samples != -1) {
++                        av_log(s, AV_LOG_DEBUG, "proccessing segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
++                        skip_samples = c->encoder_delay_samples;
++                    } else {
++                        av_log(s, AV_LOG_DEBUG, "proccessing segment, it skips no frame.\n");
++                        skip_samples = 0;
++                    }
 +                }
-+            } else {
-+                if(c->padding_samples != -1) {
-+                    av_log(s, AV_LOG_DEBUG, "proccessing segment, padding_samples is %d\n", c->padding_samples);
-+                    skip_samples = c->padding_samples;
-+                } else if(c->encoder_delay_samples != -1) {
-+                    av_log(s, AV_LOG_DEBUG, "proccessing segment, encoder_delay_samples is %d\n", c->encoder_delay_samples);
-+                    skip_samples = c->encoder_delay_samples;
-+                } else {
-+                    av_log(s, AV_LOG_DEBUG, "proccessing segment, it skips no frame.\n");
-+                    skip_samples = 0;
++
++                if(skip_samples >= 0) {
++                    pkt->opaque = &skip_samples;
 +                }
-+            }
-+        
-+            if(skip_samples >= 0) {
-+                pkt->opaque = &skip_samples;
++
 +            }
 +
              return 0;
          }
          if (cur->is_restart_needed) {
-@@ -2346,6 +2376,8 @@ static const AVOption dash_options[] = {
+@@ -2346,6 +2382,8 @@ static const AVOption dash_options[] = {
          {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
          INT_MIN, INT_MAX, FLAGS},
      { "cenc_decryption_key", "Media decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
